@@ -8,7 +8,7 @@ This repository contains the website, not the training implementation. Paper, co
 
 ## Edit and preview
 
-Edit `index.html` for content and `static/css/index.css` for styling. Paper illustrations live in `static/images/`.
+Edit `index.html` for content and `static/css/index.css` for styling. Paper illustrations live in `static/images/`; complete original-paper table crops (Tables 1, 2, 4, and 6) live in `static/tables/`.
 
 ```bash
 python3 -m http.server 8000

@@ -21,9 +21,6 @@ sup { font-size: .66em; margin-left: 1px; }
 .release-note { color: var(--muted); font-size: 13px; margin-top: .65rem; }
 .section-nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 1.3rem; margin-top: 1.65rem; font-size: 14px; }
 .section { padding: 3rem 1.5rem; }
-.teaser { padding-top: .6rem; padding-bottom: 2.8rem; }
-.teaser-summary { text-align: center; font-size: 21px; line-height: 1.6; margin: 0 auto 1.6rem; }
-.teaser-summary strong { color: var(--blue); font-weight: 600; }
 figure { margin: 1.75rem 0 0; }
 .figure-link { display: block; }
 figure img { display: block; width: 100%; height: auto; }
@@ -33,24 +30,9 @@ figcaption { margin-top: .8rem; color: #646b76; font-size: 14px; text-align: cen
 .reading-width { max-width: 850px; margin: 0 auto; text-align: justify; }
 .content p:not(:last-child) { margin-bottom: 1em; }
 .section-intro { text-align: center; margin: 0 auto 1.5rem; max-width: 840px; color: #5b636d; }
-.task-columns { margin-top: 1.75rem; }
-.task-columns .column { padding: 1rem 1.1rem; }
-.task-title { font-weight: 650; font-size: 18px; margin-bottom: .5rem; }
-.boundary { color: #087da4; }.progression { color: #bd541b; }.relation { color: #386933; }
-.task-columns p { font-size: 15px; line-height: 1.65; }
-.table { background: transparent; }
-.table-container { margin: 1.75rem 0 .8rem; }
-.results-table { font-size: 15px; white-space: nowrap; }
-.results-table caption { font-size: 13px; color: #737983; text-align: left; margin-bottom: .75rem; }
-.results-table th, .results-table td { padding: .8rem .75rem; border-color: var(--line); text-align: center; vertical-align: middle; }
-.results-table th:first-child { text-align: left; }
-.results-table thead th { font-size: 13px; color: #5b636d; border-bottom: 2px solid #818b97; }
-.results-table tbody th { font-weight: 500; }
-.results-table .ours { background: #e9f0f7; }
-.results-table .ours th { font-weight: 700; color: var(--blue); }
-.results-table .ours strong { color: var(--blue); }
-.results-table .size-divider th, .results-table .size-divider td { border-top: 2px solid #bcc5cf; }
-.table-note { font-size: 13px; line-height: 1.6; color: #737983; }
+.experiment-block { margin-top: 2.6rem; }
+.experiment-block + .experiment-block { margin-top: 3.2rem; }
+.experiment-block .title.is-4 { font-size: 22px; line-height: 1.35; margin-bottom: .7rem; }
 .data-figures { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1.8rem; align-items: center; margin-top: 1.75rem; }
 .data-figures figure { margin: 0; }
 .domain-figure { max-width: 540px; margin: 0 auto; }
@@ -75,13 +57,26 @@ figcaption { margin-top: .8rem; color: #646b76; font-size: 14px; text-align: cen
   .publication-links { gap: .45rem; }
   .resource-button { font-size: 13px; padding: 0 .85rem; }
   .section { padding: 2.3rem 1.2rem; }
-  .teaser { padding-top: .6rem; }
-  .teaser-summary { font-size: 17px; margin-bottom: 1.2rem; }
   .section-nav { gap: 1rem; font-size: 13px; }
   .title.is-3 { font-size: 25px; }
+  .experiment-block .title.is-4 { font-size: 20px; }
   .reading-width { text-align: left; }
-  .task-columns .column { padding: .65rem .75rem; }
   .domain-figure { max-width: 380px; }
   .data-figures { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+.overview-figures { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; margin: 1.75rem 0 2rem; }
+.overview-figures figure { margin: 0; }
+.overview-figures figcaption { font-size: 13px; }
+.contributions ul { margin-top: 1rem; }
+.contributions li { margin-bottom: .8rem; }
+.paper-table-figure { margin: 1.4rem 0 0; }
+.paper-table-figure img { background: #fff; }
+.paper-table-figure figcaption { font-size: 12px; margin-top: .6rem; }
+.experiment-conclusion { font-size: 16px; line-height: 1.75; margin-top: 1.25rem; }
+.efficiency-figure { margin-top: 1.4rem; }
+@media (max-width: 768px) {
+  .overview-figures { grid-template-columns: minmax(0, 1fr); gap: 1.8rem; }
+  .experiment-conclusion { font-size: 15px; }
+}

@@ -46,18 +46,8 @@
             <button class="button is-rounded is-dark resource-button" disabled><span aria-hidden="true">◈</span> Models <span class="soon">Soon</span></button>
           </div>
           <p class="release-note">Paper, training code, and Hugging Face releases are coming soon.</p>
-          <nav class="section-nav" aria-label="Page sections"><a href="#abstract">Abstract</a><a href="#method">Method</a><a href="#results">Results</a><a href="#data">Training Data</a><a href="#demos">Demo Cases</a></nav>
+          <nav class="section-nav" aria-label="Page sections"><a href="#abstract">Abstract</a><a href="#method">Contributions</a><a href="#results">Results</a><a href="#ablation">Ablation &amp; Analysis</a><a href="#data">Training Data</a><a href="#demos">Demo Cases</a></nav>
         </div>
-      </div>
-    </section>
-
-    <section class="section teaser">
-      <div class="container is-max-desktop">
-        <p class="teaser-summary">Learn <strong>where events begin and end</strong>, <strong>how an event progresses</strong>,<br class="desktop-break"> and <strong>how events relate</strong> — directly from visual evidence.</p>
-        <figure>
-          <a class="figure-link" href="static/images/overview.png" target="_blank" rel="noopener" aria-label="Open the event-structure recovery figure at full resolution"><img src="static/images/overview.png" width="2000" height="1126" alt="EventLens recovers event boundaries, distinguishes forward and reversed progression, and reasons about next events, missing events, and shuffled event order." fetchpriority="high"></a>
-          <figcaption>EventLens turns temporal understanding into three verifiable event-structure recovery tasks.</figcaption>
-        </figure>
       </div>
     </section>
 
@@ -65,45 +55,86 @@
       <div class="container is-max-desktop">
         <h2 class="title is-3 has-text-centered">Abstract</h2>
         <div class="content reading-width">
-          <p>Recent multimodal large language models achieve strong results on video question answering, yet often fail to recover the temporal structure that makes a video coherent. They may merge neighboring events, miss single-event progression, or infer implausible relations across events. We study structured temporal understanding as the ability to recover event structure from visual evidence, including event boundaries, single-event progression, and multi-event relations.</p>
-          <p>We propose <strong>EventLens</strong>, a vision-centric reinforcement learning framework that learns video understanding through <strong>event-structure recovery</strong>. Under controlled perturbations of temporal granularity, playback direction, and event order, models learn to recover the underlying structure. Three verifiable task families enable task-specialized GRPO training with deterministic rewards. <strong>Multi-teacher on-policy distillation (MT-OPD)</strong> then consolidates the specialized policies into a unified model. Experiments on Qwen3-VL backbones show consistent improvements on temporal grounding and event-sensitive reasoning while preserving general video-QA performance.</p>
+          <p>Recent multimodal large language models (MLLMs) achieve strong results on video question answering, yet often fail to recover the temporal structure that makes a video coherent. They may merge neighboring events, miss single-event progression, or infer implausible relations across events. We study structured temporal understanding as the ability to recover event structure from visual evidence, including event boundaries, single-event progression, and multi-event relations. We argue that this gap arises from a mismatch between current post-training objectives and temporal reasoning, where caption-style supervision allows models to rely on language shortcuts rather than visual temporal grounding.</p>
+          <p>To address this, we propose <strong>EventLens</strong>, a vision-centric reinforcement learning framework that learns video understanding through <em>event-structure recovery</em>. Instead of reconstructing captions, EventLens trains models to recover temporal structure under controlled perturbations, such as altered temporal granularity, reversed progression, and shuffled event order. We instantiate this framework with a three-level temporal ontology and derive three verifiable task families: event segmentation, progression discrimination, and multi-event relation reasoning. These tasks admit deterministic rewards, enabling task-specialized GRPO training without human preference labels or learned reward models. We further introduce multi-teacher on-policy distillation (MT-OPD) to consolidate specialized policies into a unified model. Experiments on Qwen3-VL backbones show consistent improvements on temporal grounding and event-sensitive reasoning benchmarks, while preserving general video-QA performance. Learning curves further demonstrate that EventLens achieves comparable downstream transfer with significantly reduced training cost compared to direct mixed RL optimization.</p>
         </div>
       </div>
     </section>
 
     <section id="method" class="section">
       <div class="container is-max-desktop">
-        <h2 class="title is-3 has-text-centered">From Event Structure to a Unified Model</h2>
-        <p class="section-intro">Three specialist teachers learn complementary temporal skills.<br class="desktop-break"> MT-OPD brings them together in a single 4B or 8B student.</p>
-        <figure>
-          <a class="figure-link" href="static/images/training-pipeline.png" target="_blank" rel="noopener" aria-label="Open the training pipeline figure at full resolution"><img src="static/images/training-pipeline.png" width="2000" height="1126" alt="Two-stage EventLens training: specialist GRPO teachers for boundary, progression, and relation tasks, followed by multi-teacher on-policy distillation into a unified student." loading="lazy"></a>
-          <figcaption>Stage 1: task-specialized GRPO. Stage 2: multi-teacher on-policy distillation.</figcaption>
-        </figure>
-        <div class="columns task-columns">
-          <div class="column"><h3 class="task-title boundary">Event Boundary</h3><p>Recover temporal spans at different levels: thematic phases, semantic events, and atomic action units.</p></div>
-          <div class="column"><h3 class="task-title progression">Single-Event Progression</h3><p>Determine whether an event unfolds forward or backward from its visual changes.</p></div>
-          <div class="column"><h3 class="task-title relation">Multi-Event Relation</h3><p>Predict the next event, recover a missing event, and restore the order of shuffled event clips.</p></div>
+        <h2 class="title is-3 has-text-centered">Overall Contributions and Illustration</h2>
+        <div class="overview-figures">
+          <figure>
+            <a class="figure-link" href="static/images/overview.png" target="_blank" rel="noopener" aria-label="Open the event-structure recovery overview at full resolution"><img src="static/images/overview.png" width="2000" height="1126" alt="EventLens recovers event boundaries, distinguishes forward and reversed progression, and reasons about next events, missing events, and shuffled event order." loading="lazy"></a>
+            <figcaption>Three complementary event-structure recovery tasks.</figcaption>
+          </figure>
+          <figure>
+            <a class="figure-link" href="static/images/training-pipeline.png" target="_blank" rel="noopener" aria-label="Open the training pipeline at full resolution"><img src="static/images/training-pipeline.png" width="2000" height="1126" alt="Task-specialized GRPO teachers followed by multi-teacher on-policy distillation into a unified student." loading="lazy"></a>
+            <figcaption>Task-specialized GRPO followed by MT-OPD.</figcaption>
+          </figure>
+        </div>
+        <div class="content reading-width contributions">
+          <p>We introduce <strong>EventLens</strong>, a vision-centric reinforcement learning framework that learns video understanding through event-structure recovery. Our contributions are:</p>
+          <ul>
+            <li><strong>Event-structure recovery as a unified target.</strong> We formulate structured temporal understanding as event-structure recovery from visual evidence, unifying event boundaries, intra-event progression, and inter-event relations.</li>
+            <li><strong>Vision-centric reinforcement learning.</strong> We propose EventLens, a vision-centric reinforcement learning framework that learns video understanding through temporal perturbation and recovery with verifiable rewards.</li>
+            <li><strong>Specialization and multi-teacher distillation.</strong> We introduce a training paradigm with task-specialized GRPO and multi-teacher on-policy distillation (MT-OPD), enabling stable integration of heterogeneous temporal skills.</li>
+            <li><strong>Temporal transfer and training efficiency.</strong> We demonstrate consistent improvements on temporal-structure benchmarks with controlled retention on general video QA, and improved training efficiency compared to direct mixed RL optimization.</li>
+          </ul>
         </div>
       </div>
     </section>
 
     <section id="results" class="section section-tinted">
       <div class="container is-max-desktop">
-        <h2 class="title is-3 has-text-centered">Results</h2>
-        <p class="section-intro">EventLens improves temporal grounding and event-sensitive reasoning<br class="desktop-break"> across both 4B and 8B Qwen3-VL backbones.</p>
-        <div class="table-container" role="region" aria-label="Benchmark results; scroll horizontally on small screens" tabindex="0">
-          <table class="table is-fullwidth results-table">
-            <caption>Selected benchmark results from the paper. Higher is better.</caption>
-            <thead><tr><th scope="col">Model</th><th scope="col">QVHighlights</th><th scope="col">ActivityNet</th><th scope="col">Charades-STA</th><th scope="col">E.T. Bench</th><th scope="col">VinoGround</th></tr></thead>
-            <tbody>
-              <tr><th scope="row">Qwen3-VL-4B</th><td>54.31</td><td>41.99</td><td>43.64</td><td>34.55</td><td>37.00</td></tr>
-              <tr class="ours"><th scope="row">EventLens-4B</th><td><strong>58.50</strong></td><td><strong>45.76</strong></td><td><strong>47.99</strong></td><td><strong>41.47</strong></td><td><strong>45.00</strong></td></tr>
-              <tr class="size-divider"><th scope="row">Qwen3-VL-8B</th><td>50.03</td><td>39.96</td><td>44.79</td><td>32.77</td><td>40.20</td></tr>
-              <tr class="ours"><th scope="row">EventLens-8B</th><td><strong>59.12</strong></td><td><strong>46.35</strong></td><td><strong>48.25</strong></td><td><strong>38.40</strong></td><td><strong>47.20</strong></td></tr>
-            </tbody>
-          </table>
+        <h2 class="title is-3 has-text-centered">Experiments</h2>
+        <div class="experiment-block">
+          <h3 class="title is-4">Temporal Grounding and Complex Reasoning</h3>
+        <figure class="paper-table-figure">
+          <a class="figure-link" href="static/tables/temporal-reasoning.png" target="_blank" rel="noopener" aria-label="Open the original paper table at full resolution"><img src="static/tables/temporal-reasoning.png" width="2256" height="1128" alt="Original paper Table 1: temporal grounding and complex reasoning for Qwen3-VL-4B and 8B, SFT-Desc, SFT-DVC, and EventLens under the shared 256-frame protocol." loading="lazy"></a>
+          <figcaption><a href="static/tables/temporal-reasoning.png" target="_blank" rel="noopener">Full resolution</a> · <a href="static/tables/temporal-reasoning.pdf" target="_blank" rel="noopener">PDF</a></figcaption>
+        </figure>
+          <p class="experiment-conclusion">EventLens achieves the best temporal-grounding scores across both Qwen3-VL backbones. Reasoning gains concentrate on event-sensitive benchmarks such as E.T. Bench.</p>
         </div>
-        <p class="table-note">All models use a shared 256-frame evaluation setting. Temporal grounding is reported as mIoU; E.T. Bench and VinoGround use their official benchmark scores. Bold denotes the better score within each base-model/EventLens pair.</p>
+        <div class="experiment-block">
+          <h3 class="title is-4">General and Long-Video QA</h3>
+        <figure class="paper-table-figure">
+          <a class="figure-link" href="static/tables/general-video-qa.png" target="_blank" rel="noopener" aria-label="Open the original paper table at full resolution"><img src="static/tables/general-video-qa.png" width="2256" height="1073" alt="Original paper Table 2: general and long-video QA scores for Qwen3-VL-4B and 8B, SFT-Desc, SFT-DVC, and EventLens." loading="lazy"></a>
+          <figcaption><a href="static/tables/general-video-qa.png" target="_blank" rel="noopener">Full resolution</a> · <a href="static/tables/general-video-qa.pdf" target="_blank" rel="noopener">PDF</a></figcaption>
+        </figure>
+          <p class="experiment-conclusion">EventLens preserves comparable broad video-QA performance while improving event-sensitive reasoning. VinoGround gains 8.00 points at 4B and 7.00 points at 8B over the instruction base.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="ablation" class="section">
+      <div class="container is-max-desktop">
+        <h2 class="title is-3 has-text-centered">Ablation &amp; Analysis</h2>
+        <div class="experiment-block">
+          <h3 class="title is-4">Teacher Specialization and Consolidation</h3>
+        <figure class="paper-table-figure">
+          <a class="figure-link" href="static/tables/teacher-consolidation.png" target="_blank" rel="noopener" aria-label="Open the original paper table at full resolution"><img src="static/tables/teacher-consolidation.png" width="2262" height="950" alt="Original paper Table 4: full teacher-consolidation ablation on Qwen3-VL-4B, including all eight downstream metrics and the single-teacher oracle." loading="lazy"></a>
+          <figcaption><a href="static/tables/teacher-consolidation.png" target="_blank" rel="noopener">Full resolution</a> · <a href="static/tables/teacher-consolidation.pdf" target="_blank" rel="noopener">PDF</a></figcaption>
+        </figure>
+          <p class="experiment-conclusion">No individual teacher is best on every benchmark. MT-OPD consolidates their complementary strengths into one student, recovering most of the single-teacher oracle envelope.</p>
+        </div>
+        <div class="experiment-block">
+          <h3 class="title is-4">Supervision Robustness</h3>
+        <figure class="paper-table-figure">
+          <a class="figure-link" href="static/tables/supervision-robustness.png" target="_blank" rel="noopener" aria-label="Open the original paper table at full resolution"><img src="static/tables/supervision-robustness.png" width="2262" height="673" alt="Original paper Table 6: instruction base, clean training, 10 percent jitter, and 20 percent jitter across all six benchmarks in the 100-step pilot." loading="lazy"></a>
+          <figcaption><a href="static/tables/supervision-robustness.png" target="_blank" rel="noopener">Full resolution</a> · <a href="static/tables/supervision-robustness.pdf" target="_blank" rel="noopener">PDF</a></figcaption>
+        </figure>
+          <p class="experiment-conclusion">With 20% timestamp perturbation, all six metrics remain above the instruction base and close to clean training in the 100-step pilot. The gains persist under moderate noise in automatically reconstructed event supervision.</p>
+        </div>
+        <div class="experiment-block">
+          <h3 class="title is-4">Training Efficiency</h3>
+          <figure class="efficiency-figure">
+            <a class="figure-link" href="static/images/training-efficiency.png" target="_blank" rel="noopener" aria-label="Open the original paper efficiency figure at full resolution"><img src="static/images/training-efficiency.png" width="2400" height="1428" alt="Original paper Figure 4: OPD and EMA-GRPO wall-clock transfer curves on E.T. Bench, MVBench, TL-Charades, and VinoGround." loading="lazy"></a>
+            <figcaption>Original paper Figure 4: MT-OPD student optimization versus direct Mixed-GRPO. <a href="static/images/training-efficiency.pdf" target="_blank" rel="noopener">PDF</a></figcaption>
+          </figure>
+          <p class="experiment-conclusion">MT-OPD reaches a comparable downstream transfer regime after roughly 13 hours, while direct Mixed-GRPO needs roughly 37 hours. This comparison measures student-stage optimization; specialist-teacher training time is excluded.</p>
+        </div>
       </div>
     </section>
 
