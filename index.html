@@ -46,7 +46,7 @@
             <button class="button is-rounded is-dark resource-button" disabled><span aria-hidden="true">◈</span> Models <span class="soon">Soon</span></button>
           </div>
           <p class="release-note">Paper, training code, and Hugging Face releases are coming soon.</p>
-          <nav class="section-nav" aria-label="Page sections"><a href="#abstract">Abstract</a><a href="#method">Method</a><a href="#results">Results</a><a href="#data">Training Data</a></nav>
+          <nav class="section-nav" aria-label="Page sections"><a href="#abstract">Abstract</a><a href="#method">Method</a><a href="#results">Results</a><a href="#data">Training Data</a><a href="#demos">Demo Cases</a></nav>
         </div>
       </div>
     </section>
@@ -115,22 +115,23 @@
           <a class="figure-link" href="static/images/event-structure.png" target="_blank" rel="noopener" aria-label="Open the event hierarchy figure at full resolution"><img src="static/images/event-structure.png" width="2000" height="767" alt="Scene-first annotation organizes video into thematic phases, semantic events, and atomic action units, then constructs boundary, progression, and relation tasks." loading="lazy"></a>
           <figcaption>Scene-first annotation and task construction. The illustrated boundaries and event assignments are schematic.</figcaption>
         </figure>
-        <div class="columns is-vcentered data-columns">
-          <div class="column is-5">
-            <figure class="domain-figure"><a class="figure-link" href="static/images/data-domains.png" target="_blank" rel="noopener" aria-label="Open the source-video domain figure at full resolution"><img src="static/images/data-domains.png" width="1600" height="1600" alt="Source-video domains span food and culinary activities, daily life, engineering and mechanics, sports and outdoors, culture and media, and general videos." loading="lazy"></a><figcaption>Source-video domains before recovery-task construction.</figcaption></figure>
-          </div>
-          <div class="column is-7">
-            <h3 class="title is-5">Task composition</h3>
-            <table class="table is-fullwidth data-table"><thead><tr><th scope="col">Task family</th><th scope="col">Training target</th></tr></thead><tbody>
-              <tr><th scope="row">Boundary</th><td>Level-conditioned event spans</td></tr>
-              <tr><th scope="row">Progression</th><td>Forward / backward event direction</td></tr>
-              <tr><th scope="row">Relation</th><td>Next event, missing event, clip order</td></tr>
-              <tr><th scope="row">Temporal grounding</th><td>Query-conditioned temporal interval</td></tr>
-              <tr><th scope="row">Video QA</th><td>Multiple-choice answer</td></tr>
-            </tbody></table>
-            <p class="data-release">The dataset and EventLens-4B / 8B model releases will be linked here when available.</p>
-          </div>
-        </div>
+        <figure class="domain-figure"><a class="figure-link" href="static/images/data-domains.png" target="_blank" rel="noopener" aria-label="Open the source-video domain figure at full resolution"><img src="static/images/data-domains.png" width="1600" height="1600" alt="Source-video domains span food and culinary activities, daily life, engineering and mechanics, sports and outdoors, culture and media, and general videos." loading="lazy"></a><figcaption>Source-video domains before recovery-task construction.</figcaption></figure>
+        <p class="data-release has-text-centered">The dataset and EventLens-4B / 8B model releases will be linked here when available.</p>
+      </div>
+    </section>
+
+    <section id="demos" class="section section-tinted">
+      <div class="container is-max-desktop">
+        <h2 class="title is-3 has-text-centered">Demo Cases</h2>
+        <p class="section-intro">Qualitative examples of event progression and final-state reasoning.</p>
+        <figure class="demo-figure">
+          <a class="figure-link" href="static/images/demo-endpoint.png" target="_blank" rel="noopener" aria-label="Open the event progression demo at full resolution"><img src="static/images/demo-endpoint.png" width="996" height="299" alt="TempCompass example: a pixelated object transforms from flower to heart to square. The baseline selects flower to heart, while EventLens correctly selects flower to square." loading="lazy"></a>
+          <figcaption><strong>Event progression.</strong> EventLens follows the full flower → heart → square transition and maps its initial and final states to the requested answer.</figcaption>
+        </figure>
+        <figure class="demo-figure">
+          <a class="figure-link" href="static/images/demo-final-state.png" target="_blank" rel="noopener" aria-label="Open the final-state grounding demo at full resolution"><img src="static/images/demo-final-state.png" width="1652" height="512" alt="Basketball example: the baseline output truncates before resolving the winner. EventLens selects the final game state and identifies the winning team as black shirts and white shorts." loading="lazy"></a>
+          <figcaption><strong>Final-state grounding.</strong> EventLens selects the final score and grounds the winning team in its visual appearance.</figcaption>
+        </figure>
       </div>
     </section>
   </main>

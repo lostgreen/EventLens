@@ -51,15 +51,13 @@ figcaption { margin-top: .8rem; color: #646b76; font-size: 14px; text-align: cen
 .results-table .ours strong { color: var(--blue); }
 .results-table .size-divider th, .results-table .size-divider td { border-top: 2px solid #bcc5cf; }
 .table-note { font-size: 13px; line-height: 1.6; color: #737983; }
-.data-columns { margin-top: 1.75rem; }
-.data-columns .column { padding: 1rem 1.25rem; }
-.domain-figure { margin: 0; }
+.domain-figure { max-width: 540px; margin: 2rem auto 0; }
 .domain-figure figcaption { font-size: 12px; }
-.data-table { font-size: 14px; }
-.data-table th, .data-table td { padding: .65rem .3rem; border-color: var(--line); vertical-align: middle; }
-.data-table thead th { color: #737983; font-weight: 500; }
-.data-table tbody th { font-weight: 600; width: 39%; }
 .data-release { color: var(--muted); font-size: 14px; margin-top: 1.2rem; }
+.demo-figure { margin-top: 2.2rem; }
+.demo-figure + .demo-figure { margin-top: 2.8rem; }
+.demo-figure img { border: 1px solid #d8e0e8; }
+.demo-figure figcaption { max-width: 850px; margin: .9rem auto 0; }
 .footer { background: #f6f7f9; padding: 2rem 1.5rem; font-size: 14px; }
 .template-credit { color: var(--muted); font-size: 12px; max-width: 700px; margin: .65rem auto; }
 .website-source { font-size: 12px; }
@@ -81,7 +79,6 @@ figcaption { margin-top: .8rem; color: #646b76; font-size: 14px; text-align: cen
   .title.is-3 { font-size: 25px; }
   .reading-width { text-align: left; }
   .task-columns .column { padding: .65rem .75rem; }
-  .data-columns .column { padding: 1rem .75rem; }
-  .domain-figure { max-width: 380px; margin: 0 auto; }
+  .domain-figure { max-width: 380px; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
