@@ -6,7 +6,11 @@ Live page: [lostgreen.github.io/EventLens](https://lostgreen.github.io/EventLens
 
 Paper: [arXiv:2610.16172](https://arxiv.org/abs/2610.16172).
 
-This repository contains the project website. Code, dataset, and model links will be added when their public releases are available.
+Dataset: [EventLens-Train](https://huggingface.co/datasets/Lostgreen/EventLens-Train).
+
+Student models: [EventLens-4B](https://huggingface.co/Lostgreen/EventLens-4B) · [EventLens-8B](https://huggingface.co/Lostgreen/EventLens-8B).
+
+This repository contains the project website. The training code link will be added when its public release is available.
 
 ## Edit and preview
 
