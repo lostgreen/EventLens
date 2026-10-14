@@ -4,7 +4,9 @@ Academic project website for **EventLens: Event-Structure Reinforcement Learning
 
 Live page: [lostgreen.github.io/EventLens](https://lostgreen.github.io/EventLens/).
 
-This repository contains the website, not the training implementation. Paper, code, dataset, and model links will be added when their public releases are available.
+Paper: [arXiv:2610.16172](https://arxiv.org/abs/2610.16172).
+
+This repository contains the project website. Code, dataset, and model links will be added when their public releases are available.
 
 ## Edit and preview
 
