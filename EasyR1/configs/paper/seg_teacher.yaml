@@ -1,0 +1,10 @@
+extends: ../base.yaml
+release:
+  recipe_id: paper_seg_teacher
+  dataset_version: vpmixed_20260516_full_comp
+  prompt_mode: no_cot
+  mix: composition_base_seg_hier10k_mf256_ema
+  validation_role: monitor_val
+  reproduction_status: reconstructed_pending_gpu_validation
+trainer:
+  experiment_name: paper_seg_teacher

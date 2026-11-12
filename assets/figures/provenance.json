@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "paper_title": "EventLens: Event-Structure Reinforcement Learning for Video Understanding",
+  "source_commit": "095c319a6018854bf1ddcac77ec5632915291b33",
+  "source_files_clean_at_export": true,
+  "exported_on": "2026-10-09",
+  "rendering": {
+    "tool": "pdftoppm",
+    "arguments": [
+      "-singlefile",
+      "-scale-to",
+      "2000",
+      "-png"
+    ],
+    "crop": "none",
+    "content_changes": "none"
+  },
+  "figures": [
+    {
+      "file": "overview.png",
+      "source_file": "figures/Figre1_new.pdf",
+      "source_sha256": "1765b0d62d87f1fef2fc69eb434fd35968979435026519f83902423b4c870dc4",
+      "sha256": "cba4786490a3bd7bd766c608d50e82fc6cb173250031eeae4beeaf54ace54b52",
+      "pixels": [
+        2000,
+        1126
+      ],
+      "bytes": 970778
+    },
+    {
+      "file": "training-pipeline.png",
+      "source_file": "figures/Figure2.pdf",
+      "source_sha256": "278147edb12cdf4a9dc04d7ebd643cbb737b16c7a8e95701a036d090f529e141",
+      "sha256": "1ba9541a79adb9c8d182f7bc2872e638f8cf84453026401f5da2503277361817",
+      "pixels": [
+        2000,
+        1126
+      ],
+      "bytes": 194717
+    },
+    {
+      "file": "event-structure.png",
+      "source_file": "figures/eventlens_annotation_core.pdf",
+      "source_sha256": "8af8c7af36d165c1c48b4d26fdd417a3b3ea6ee0fbe0b590f62bba0e8d66609d",
+      "sha256": "af3fad7bb35616c9a1dff521aa19bb5fc8fb4be42f36b015fba1efda8060ace0",
+      "pixels": [
+        2000,
+        767
+      ],
+      "bytes": 633568
+    },
+    {
+      "file": "data-domains.png",
+      "source_file": "figures/input_domain_sunburst.pdf",
+      "source_sha256": "666dc9702d681b5bb7fcc3d4844d1a68fef78d3a77ea8d1fe2beeab00014f711",
+      "rendering": {
+        "tool": "pdftoppm",
+        "arguments": [
+          "-singlefile",
+          "-scale-to",
+          "1600",
+          "-png"
+        ],
+        "content_changes": "none"
+      },
+      "sha256": "6ea84ec38c7da0e5f102fa29954c62f6deaab70312080bf5ad9c58978cb1ed4a",
+      "pixels": [
+        1600,
+        1600
+      ],
+      "bytes": 256353
+    }
+  ],
+  "readme_results": {
+    "source_file": "sections/experiments.tex",
+    "source_sha256": "1c1ee03e1dc41fb2d1880ff5cbccdce9348dd09f8ee1060d8833e990e502b514",
+    "source_tables": [
+      "tab:temporal",
+      "tab:general"
+    ],
+    "selection": "Qwen3-VL-4B, EventLens-4B, Qwen3-VL-8B, and EventLens-8B; QVHighlights, ActivityNet, Charades-STA, E.T. Bench, VinoGround",
+    "content_changes": "Original scores; selected benchmarks without averaging."
+  }
+}

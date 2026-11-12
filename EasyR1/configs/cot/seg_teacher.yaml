@@ -1,0 +1,6 @@
+extends: base.yaml
+release:
+  recipe_id: cot_seg_teacher
+  mix: seg_teacher
+trainer:
+  experiment_name: cot_seg_teacher

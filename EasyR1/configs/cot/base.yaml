@@ -1,0 +1,27 @@
+extends: ../base.yaml
+release:
+  dataset_version: cot_v1
+  parent_dataset_version: vpmixed_20260516_full_comp
+  prompt_mode: cot
+  reasoning_tag: thought
+  validation_role: monitor_val
+  reproduction_status: extension_pending_gpu_validation
+data:
+  max_response_length: 512
+worker:
+  rollout:
+    temperature: 1.0
+    max_num_seqs: 16
+    cot_budget_enabled: true
+    cot_budget_start_token: <thought>
+    cot_budget_end_token: </thought>
+    cot_budget_max_tokens: 128
+    cot_budget_repair_suffix: <answer>
+  reward:
+    reward_function_kwargs:
+      cot_format_reward_enabled: true
+      cot_format_missing: 0.0
+      cot_format_truncated: 0.5
+      cot_format_ok: 1.0
+trainer:
+  val_before_train: false

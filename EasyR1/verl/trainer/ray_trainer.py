@@ -1,0 +1,1108 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+PPO Trainer with Ray-based single controller.
+This trainer supports model-agonistic model initialization with huggingface.
+"""
+
+import json
+import os
+import re
+import uuid
+from collections import defaultdict
+from copy import deepcopy
+from dataclasses import dataclass, field
+from enum import IntEnum, auto
+from typing import Any, Optional, Type
+
+import numpy as np
+import ray
+import torch
+from ray.experimental.tqdm_ray import tqdm
+from torchdata.stateful_dataloader import StatefulDataLoader
+from transformers import PreTrainedTokenizer, ProcessorMixin
+
+from ..protocol import DataProto, pad_dataproto_to_divisor, unpad_dataproto
+from ..single_controller.base import Worker
+from ..single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
+from ..single_controller.ray.base import create_colocated_worker_cls
+from ..utils import torch_functional as VF
+from ..utils.checkpoint import CHECKPOINT_TRACKER, find_latest_ckpt, remove_obsolete_ckpt
+from ..utils.logger import Tracker
+from ..utils.py_functional import convert_dict_to_str, timer, unflatten_dict
+from ..utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
+from ..utils.gpu_phase_signal import clear_gpu_phase, register_cleanup, set_gpu_phase
+from ..utils.timing_logger import init_timing_log, log_timing, tlog
+from ..workers.fsdp_workers import FSDPWorker
+from ..workers.reward import FunctionRewardManager
+from .config import PPOConfig
+from .core_algos import (
+    AdvantageEstimator,
+    FixedKLController,
+    KLController,
+    compute_advantage_return,
+    compute_kl,
+    get_kl_controller,
+)
+from .metrics import (
+    compute_data_metrics,
+    compute_length_metrics,
+    compute_opd_data_metrics,
+    compute_throughout_metrics,
+    compute_timing_metrics,
+    reduce_metrics,
+)
+
+
+_TEMPORAL_SEGMENT_PATTERN = re.compile(r"\[\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*\]")
+
+
+def _unpack_reward_output(reward_output):
+    if len(reward_output) == 2:
+        reward_tensor, reward_metrics = reward_output
+        return reward_tensor, reward_metrics, {}
+    reward_tensor, reward_metrics, extra_tensors = reward_output
+    return reward_tensor, reward_metrics, extra_tensors or {}
+
+
+def _attach_reward_extra_tensors(batch: DataProto, extra_tensors: dict[str, torch.Tensor]) -> None:
+    for key, value in extra_tensors.items():
+        batch.batch[key] = value
+
+
+def _extract_temporal_segments(text: str) -> list[list[float]]:
+    if not text:
+        return []
+    matches = _TEMPORAL_SEGMENT_PATTERN.findall(str(text))
+    segments = []
+    for start_raw, end_raw in matches:
+        start = float(start_raw)
+        end = float(end_raw)
+        if start >= end or start < 0:
+            continue
+        segments.append([start, end])
+    return segments
+
+
+def _to_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.ndarray):
+        return [_to_jsonable(v) for v in value.tolist()]
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    return str(value)
+
+
+def _flatten_paths(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        flattened = []
+        for item in value:
+            flattened.extend(_flatten_paths(item))
+        return flattened
+    return [str(value)]
+
+
+def _rollout_filepath(rollout_dir: str, phase: str, step: int) -> str:
+    prefix = "val_step" if phase == "val" else "step"
+    return os.path.join(rollout_dir, f"{prefix}_{step:06d}.jsonl")
+
+
+def _rollout_media_filepath(rollout_dir: str, phase: str, step: int) -> str:
+    prefix = "val_step" if phase == "val" else "step"
+    return os.path.join(rollout_dir, f"{prefix}_{step:06d}.media.jsonl")
+
+
+def _jsonl_line_count(filepath: str) -> int:
+    if not os.path.exists(filepath):
+        return 0
+    count = 0
+    with open(filepath, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
+class Role(IntEnum):
+    """
+    To create more roles dynamically, you can subclass Role and add new members
+    """
+
+    Actor = auto()
+    Rollout = auto()
+    ActorRollout = auto()
+    Critic = auto()
+    RefPolicy = auto()
+    RewardModel = auto()
+    ActorRolloutRef = auto()
+
+
+@dataclass
+class ResourcePoolManager:
+    """
+    Define a resource pool specification. Resource pool will be initialized first.
+    """
+
+    resource_pool_spec: dict[str, list[int]]
+    mapping: dict[Role, str]
+    resource_pool_dict: dict[str, RayResourcePool] = field(default_factory=dict)
+
+    def create_resource_pool(self):
+        """Create ray resource pools for distributed training."""
+        for resource_pool_name, process_on_nodes in self.resource_pool_spec.items():
+            # max_colocate_count means the number of WorkerGroups (i.e. processes) in each RayResourcePool
+            # For FSDP backend, we recommend using max_colocate_count=1 that merge all WorkerGroups into one.
+            # For Megatron backend, we recommend using max_colocate_count>1 that can utilize different WorkerGroup for different models
+            resource_pool = RayResourcePool(
+                process_on_nodes=process_on_nodes, use_gpu=True, max_colocate_count=1, name_prefix=resource_pool_name
+            )
+            self.resource_pool_dict[resource_pool_name] = resource_pool
+
+        self._check_resource_available()
+
+    def get_resource_pool(self, role: Role) -> RayResourcePool:
+        """Get the resource pool of the worker."""
+        return self.resource_pool_dict[self.mapping[role]]
+
+    def get_num_gpus(self) -> int:
+        """Get the number of gpus in this cluster."""
+        return sum([n_gpus for process_on_nodes in self.resource_pool_spec.values() for n_gpus in process_on_nodes])
+
+    def _check_resource_available(self):
+        """Check if the resource pool can be satisfied in this ray cluster."""
+        # if ray.available_resources().get("GPU", 0) < self.get_num_gpus():
+            # raise ValueError(f"Total available GPUs is less than total desired GPUs.")
+
+
+def apply_kl_penalty(data: DataProto, kl_ctrl: KLController, kl_penalty="kl"):
+    """Apply KL penalty to the token-level rewards."""
+    token_level_scores = data.batch["token_level_scores"]
+    batch_size = data.batch.batch_size[0]
+    response_mask = data.batch["response_mask"]
+
+    # compute kl between ref_policy and current policy
+    kld = compute_kl(data.batch["old_log_probs"], data.batch["ref_log_probs"], kl_penalty=kl_penalty)
+    kld = kld * response_mask  # (batch_size, response_length)
+
+    data.batch["token_level_rewards"] = token_level_scores - kl_ctrl.kl_coef * kld
+
+    current_kl = torch.mean(VF.masked_mean(kld, mask=response_mask, dim=-1)).item()
+    metrics = {"actor/kl_penalty": current_kl, "actor/kl_coef": kl_ctrl.kl_coef}
+
+    # According to https://github.com/huggingface/trl/blob/v0.11.0/trl/trainer/ppo_trainer.py#L880
+    kl_ctrl.update(current_kl=current_kl, n_steps=batch_size)
+    return data, metrics
+
+
+def compute_advantage(data: DataProto, adv_estimator: AdvantageEstimator, gamma: float = 1.0, lam: float = 1.0):
+    """Compute advantage estimates for policy optimization."""
+    adv_inputs = {
+        "token_level_rewards": data.batch["token_level_rewards"],
+        "response_mask": data.batch["response_mask"],
+        "index": data.non_tensor_batch["uid"],
+        "gamma": gamma,
+        "lam": lam,
+        "data_type": data.non_tensor_batch["data_type"],
+        "problem_type": data.non_tensor_batch["problem_type"],
+    }
+
+    # print(adv_inputs)
+
+    if "values" in data.batch:
+        adv_inputs["values"] = data.batch["values"]
+
+    if "reward_baselines" in data.batch:
+        adv_inputs["reward_baselines"] = data.batch["reward_baselines"]
+
+    advantages, returns = compute_advantage_return(adv_estimator, **adv_inputs)
+    data.batch["advantages"] = advantages
+    data.batch["returns"] = returns
+    return data
+
+
+class RayPPOTrainer:
+    """
+    Note that this trainer runs on the driver process on a single CPU/GPU node.
+    """
+
+    def __init__(
+        self,
+        config: PPOConfig,
+        tokenizer: PreTrainedTokenizer,
+        processor: Optional[ProcessorMixin],
+        train_dataloader: StatefulDataLoader,
+        val_dataloader: StatefulDataLoader,
+        role_worker_mapping: dict[Role, Type[Worker]],
+        resource_pool_manager: ResourcePoolManager,
+        ray_worker_group_cls: Type[RayWorkerGroup] = RayWorkerGroup,
+        reward_fn: Optional[FunctionRewardManager] = None,
+        val_reward_fn: Optional[FunctionRewardManager] = None,
+    ):
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.train_dataloader = train_dataloader
+        self.val_dataloader = val_dataloader
+        self.config = config
+        self.reward_fn = reward_fn
+        self.val_reward_fn = val_reward_fn
+
+        self.val_reward_score = 0.0
+        self.best_val_reward_score = -1.0
+        self.best_global_step = None
+
+        self.hybrid_engine = config.worker.hybrid_engine
+        self.role_worker_mapping = role_worker_mapping
+        self.resource_pool_manager = resource_pool_manager
+        self.use_reward_model = Role.RewardModel in role_worker_mapping
+        self.ray_worker_group_cls = ray_worker_group_cls
+        self.use_opd = config.algorithm.training_mode == "opd"
+
+        # define KL control
+        if config.algorithm.disable_kl:
+            self.use_reference_policy = False
+            self.kl_ctrl = FixedKLController(init_kl_coef=0.0)
+            print("KL is disabled, no KL metrics will be logged. Please set `kl_coef=0` to log KL metrics.")
+        else:
+            self.use_reference_policy = True
+            self.kl_ctrl = get_kl_controller(config.algorithm)
+
+        if config.algorithm.adv_estimator == AdvantageEstimator.GAE:
+            self.use_critic = True
+        else:
+            self.use_critic = False
+
+        if self.use_opd:
+            if config.algorithm.disable_kl:
+                raise ValueError("OPD requires a teacher/reference policy. Set algorithm.disable_kl=false.")
+            if config.worker.rollout.n != 1:
+                raise ValueError("OPD uses single on-policy rollout per prompt. Set worker.rollout.n=1.")
+            if config.algorithm.online_filtering:
+                raise ValueError("OPD does not compute reward groups. Set algorithm.online_filtering=false.")
+            if self.use_critic:
+                raise ValueError("OPD is distillation-only and does not use a critic.")
+
+        if config.algorithm.adv_estimator not in list(AdvantageEstimator):
+            raise NotImplementedError(f"Unknown advantage estimator: {config.algorithm.adv_estimator}.")
+
+        if config.data.rollout_batch_size % config.worker.actor.global_batch_size != 0:
+            raise ValueError("Rollout batch size must be divisible by actor global batch size.")
+
+        if (
+            config.data.rollout_batch_size * config.worker.rollout.n
+        ) % config.worker.actor.micro_batch_size_per_device_for_experience != 0:
+            raise ValueError(
+                "Rollout batch size * rollout.n must be divisible by actor micro batch size for experience."
+            )
+
+        if self.use_critic:
+            if config.data.rollout_batch_size % config.worker.critic.global_batch_size != 0:
+                raise ValueError("Rollout batch size must be divisible by critic global batch size.")
+
+            if (
+                config.data.rollout_batch_size * config.worker.rollout.n
+            ) % config.worker.critic.micro_batch_size_per_device_for_experience != 0:
+                raise ValueError(
+                    "Rollout batch size * rollout.n must be divisible by critic micro batch size for experience."
+                )
+
+        if (
+            not self.use_opd
+            and config.algorithm.adv_estimator in (AdvantageEstimator.GRPO, AdvantageEstimator.RLOO)
+            and config.worker.rollout.n == 1
+        ):
+            raise ValueError("GRPO and RLOO algorithm need `config.worker.rollout.n > 1`.")
+
+        if config.trainer.max_steps is not None:
+            self.training_steps = config.trainer.max_steps
+        elif config.data.mini_rollout_batch_size is not None:
+            num_examples = len(train_dataloader) * config.data.mini_rollout_batch_size
+            self.training_steps = num_examples // config.data.rollout_batch_size * config.trainer.total_epochs
+        else:
+            self.training_steps = len(train_dataloader) * config.trainer.total_epochs
+
+        self._consumed_samples = 0
+        self._dataset_size = len(train_dataloader) * config.data.rollout_batch_size
+
+        config.worker.actor.optim.training_steps = self.training_steps
+        config.worker.critic.optim.training_steps = self.training_steps
+        print(f"Total training steps: {self.training_steps}")
+
+    def init_workers(self) -> None:
+        """Init resource pool and worker group"""
+        self.resource_pool_manager.create_resource_pool()
+        self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
+
+        # create actor, rollout and ref
+        if self.hybrid_engine:
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRolloutRef)
+            actor_rollout_ref_cls = RayClassWithInitArgs(
+                cls=self.role_worker_mapping[Role.ActorRolloutRef], config=self.config.worker, role="actor_rollout_ref"
+            )
+            self.resource_pool_to_cls[resource_pool]["actor_rollout_ref"] = actor_rollout_ref_cls
+        else:
+            raise NotImplementedError
+
+        # create critic
+        if self.use_critic:
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
+            critic_cls = RayClassWithInitArgs(
+                cls=self.role_worker_mapping[Role.Critic], config=self.config.worker, role="critic"
+            )
+            self.resource_pool_to_cls[resource_pool]["critic"] = critic_cls
+
+        # create a reward model if reward_fn is None
+        if self.use_reward_model:
+            # we create a RM here
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
+            rm_cls = RayClassWithInitArgs(
+                cls=self.role_worker_mapping[Role.RewardModel], config=self.config.worker, role="reward"
+            )
+            self.resource_pool_to_cls[resource_pool]["rm"] = rm_cls
+
+        # initialize WorkerGroup
+        # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
+        # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
+        # See https://github.com/volcengine/verl/blob/master/examples/ray/tutorial.ipynb for more information.
+        all_wg: dict[str, FSDPWorker] = {}
+        self.wg_dicts = []
+        for resource_pool, class_dict in self.resource_pool_to_cls.items():
+            worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
+            wg_dict = self.ray_worker_group_cls(resource_pool=resource_pool, ray_cls_with_init=worker_dict_cls)
+            spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
+            all_wg.update(spawn_wg)
+            # keep the referece of WorkerDict to support ray >= 2.31. Ref: https://github.com/ray-project/ray/pull/45699
+            self.wg_dicts.append(wg_dict)
+
+        if self.use_critic:
+            self.critic_wg = all_wg["critic"]
+            self.critic_wg.init_model()
+
+        if self.use_reward_model:
+            self.rm_wg = all_wg["rm"]
+            self.rm_wg.init_model()
+
+        # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
+        self.actor_rollout_ref_wg = all_wg["actor_rollout_ref"]
+        self.actor_rollout_ref_wg.init_model()
+
+    def _save_checkpoint(self) -> None:
+        # path: {save_checkpoint_path}/global_step_{global_step}/{actor,critic}
+        if self.val_reward_score > self.best_val_reward_score:
+            self.best_val_reward_score = self.val_reward_score
+            self.best_global_step = self.global_step
+
+        remove_obsolete_ckpt(
+            self.config.trainer.save_checkpoint_path,
+            self.global_step,
+            self.best_global_step,
+            self.config.trainer.save_limit,
+        )
+        folder_path = os.path.join(self.config.trainer.save_checkpoint_path, f"global_step_{self.global_step}")
+        actor_path = os.path.join(folder_path, "actor")
+        self.actor_rollout_ref_wg.save_checkpoint(actor_path, save_model_only=self.config.trainer.save_model_only)
+
+        if self.use_critic:
+            critic_path = os.path.join(folder_path, "critic")
+            self.critic_wg.save_checkpoint(critic_path, save_model_only=self.config.trainer.save_model_only)
+
+        dataloader_path = os.path.join(folder_path, "dataloader.pt")
+        dataloader_state_dict = self.train_dataloader.state_dict()
+        torch.save(dataloader_state_dict, dataloader_path)
+
+        checkpointer_tracker_info = {
+            "best_global_step": self.best_global_step,
+            "best_val_reward_score": round(self.best_val_reward_score, 4),
+            "last_global_step": self.global_step,
+            "last_actor_path": os.path.abspath(actor_path),
+        }
+        checkpointer_tracker_path = os.path.join(self.config.trainer.save_checkpoint_path, CHECKPOINT_TRACKER)
+        with open(checkpointer_tracker_path, "w") as f:
+            json.dump(checkpointer_tracker_info, f, ensure_ascii=False, indent=2)
+
+    def _load_checkpoint(self) -> None:
+        if self.config.trainer.load_checkpoint_path is not None:
+            load_checkpoint_path = self.config.trainer.load_checkpoint_path
+        elif self.config.trainer.find_last_checkpoint:
+            load_checkpoint_path, tracker_info = find_latest_ckpt(self.config.trainer.save_checkpoint_path)
+            if tracker_info is not None:
+                self.best_val_reward_score = tracker_info.get("best_val_reward_score", 0.0)
+                self.best_global_step = tracker_info.get("best_global_step", 0)
+        else:
+            load_checkpoint_path = None
+
+        if load_checkpoint_path is None:
+            return
+
+        if "global_step_" not in load_checkpoint_path.strip(os.path.sep).split(os.path.sep)[-1]:
+            raise ValueError("`load_checkpoint_path` should end with `global_step_*`.")
+
+        print(f"Load from checkpoint: {load_checkpoint_path}.")
+        self.global_step = int(load_checkpoint_path.strip(os.path.sep).split("global_step_")[-1])
+        actor_path = os.path.join(load_checkpoint_path, "actor")
+        self.actor_rollout_ref_wg.load_checkpoint(actor_path)
+        if self.use_critic:
+            critic_path = os.path.join(load_checkpoint_path, "critic")
+            self.critic_wg.load_checkpoint(critic_path)
+
+        dataloader_path = os.path.join(load_checkpoint_path, "dataloader.pt")
+        if os.path.exists(dataloader_path):
+            dataloader_state_dict = torch.load(dataloader_path, weights_only=False)
+            self.train_dataloader.load_state_dict(dataloader_state_dict)
+        else:
+            print(f"No dataloader state found at {dataloader_path}, will start from scratch.")
+
+    def _save_rollouts(
+        self,
+        batch: DataProto,
+        scores: list[float],
+        multimodal_sources: list[Any],
+        phase: str,
+        append: bool = False,
+    ) -> None:
+        if not self.config.trainer.save_rollout_to_file:
+            return
+
+        rollout_dir = os.path.join(self.config.trainer.save_checkpoint_path, "rollouts")
+        os.makedirs(rollout_dir, exist_ok=True)
+        filepath = _rollout_filepath(rollout_dir, phase=phase, step=self.global_step)
+        media_filepath = _rollout_media_filepath(rollout_dir, phase=phase, step=self.global_step)
+
+        prompt_ids = batch.batch["prompts"]       # (B, prompt_len)
+        response_ids = batch.batch["responses"]   # (B, response_len)
+        uids = batch.non_tensor_batch.get("uid", [None] * len(scores))
+        ground_truths = batch.non_tensor_batch.get("ground_truth", [None] * len(scores))
+        problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(scores))
+        data_types = batch.non_tensor_batch.get("data_type", [None] * len(scores))
+        problem_ids = batch.non_tensor_batch.get("problem_id", [None] * len(scores))
+        problems = batch.non_tensor_batch.get("problem_reserved_text", [None] * len(scores))
+        metadata = batch.non_tensor_batch.get("metadata", [None] * len(scores))
+        cot_budget_debug = batch.non_tensor_batch.get("cot_budget_debug", [None] * len(scores))
+
+        total = len(scores)
+        n = self.config.trainer.save_rollout_n_per_step
+        indices = list(range(total)) if n <= 0 else list(range(min(n, total)))
+
+        mode = "a" if append else "w"
+        media_file_name = os.path.basename(media_filepath)
+        media_line_offset = _jsonl_line_count(media_filepath) if append else 0
+        with open(filepath, mode, encoding="utf-8") as f, open(media_filepath, mode, encoding="utf-8") as media_f:
+            for media_offset, i in enumerate(indices):
+                prompt_text = self.tokenizer.decode(prompt_ids[i], skip_special_tokens=True)
+                response_text = self.tokenizer.decode(response_ids[i], skip_special_tokens=True)
+                problem_type = str(problem_types[i]) if problem_types[i] is not None else None
+                mm_source = multimodal_sources[i] if i < len(multimodal_sources) else None
+                mm_source_json = _to_jsonable(mm_source) if self.config.trainer.save_rollout_include_multimodal else None
+                video_paths = []
+                image_paths = []
+                if isinstance(mm_source_json, dict):
+                    video_paths = _flatten_paths(mm_source_json.get("videos"))
+                    image_paths = _flatten_paths(mm_source_json.get("images"))
+                media_index = media_line_offset + media_offset
+                media_ref = {"file": media_file_name, "index": media_index}
+
+                record = {
+                    "phase": phase,
+                    "step": self.global_step,
+                    "uid": str(uids[i]) if uids[i] is not None else None,
+                    "problem_type": problem_type,
+                    "data_type": str(data_types[i]) if data_types[i] is not None else None,
+                    "problem_id": str(problem_ids[i]) if problem_ids[i] is not None else None,
+                    "problem": str(problems[i]) if problems[i] is not None else None,
+                    "metadata": _to_jsonable(metadata[i]) if metadata[i] is not None else None,
+                    "prompt": prompt_text,
+                    "response": response_text,
+                    "ground_truth": str(ground_truths[i]) if ground_truths[i] is not None else None,
+                    "reward": scores[i],
+                    "media_ref": media_ref,
+                    "cot_budget_debug": _to_jsonable(cot_budget_debug[i]) if cot_budget_debug[i] is not None else None,
+                }
+                media_record = {
+                    "phase": phase,
+                    "step": self.global_step,
+                    "index": media_index,
+                    "batch_index": i,
+                    "uid": str(uids[i]) if uids[i] is not None else None,
+                    "problem_id": str(problem_ids[i]) if problem_ids[i] is not None else None,
+                    "problem_type": problem_type,
+                    "video_nframes": mm_source.get("video_nframes") if isinstance(mm_source, dict) else None,
+                    "video_fps": mm_source.get("video_fps") if isinstance(mm_source, dict) else None,
+                }
+                media_record["video_paths"] = video_paths
+                media_record["image_paths"] = image_paths
+                media_record["multi_modal_source"] = mm_source_json
+                if self.config.trainer.save_rollout_include_timeline and problem_type == "temporal_seg":
+                    pred_segments = _extract_temporal_segments(response_text)
+                    gt_segments = _extract_temporal_segments(record["ground_truth"])
+                    max_t = 0.0
+                    if pred_segments:
+                        max_t = max(max_t, max(seg[1] for seg in pred_segments))
+                    if gt_segments:
+                        max_t = max(max_t, max(seg[1] for seg in gt_segments))
+                    record["temporal_segments"] = {
+                        "predicted": pred_segments,
+                        "ground_truth": gt_segments,
+                        "max_t": max_t,
+                    }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                media_f.write(json.dumps(media_record, ensure_ascii=False) + "\n")
+
+        print(
+            f"[rollout] {phase} step {self.global_step}: saved {len(indices)}/{total} samples "
+            f"→ {filepath} (+ media {media_filepath})"
+        )
+
+    def _save_train_rollouts(self, batch: DataProto) -> None:
+        """Save training rollouts at current step to {save_checkpoint_path}/rollouts/step_XXXXXX.jsonl."""
+        if "token_level_scores" in batch.batch:
+            scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+        else:
+            scores = [0.0] * len(batch)
+        multimodal_sources = batch.non_tensor_batch.get("multi_modal_data", [None] * len(scores))
+        self._save_rollouts(batch, scores=scores, multimodal_sources=multimodal_sources, phase="train")
+
+    def _save_val_rollouts(
+        self,
+        batch: DataProto,
+        reward_tensor: torch.Tensor,
+        multimodal_sources: list[Any],
+    ) -> None:
+        scores = reward_tensor.sum(-1).cpu().tolist()
+        self._save_rollouts(batch, scores=scores, multimodal_sources=multimodal_sources, phase="val", append=True)
+
+    def _maybe_log_val_generations(
+        self, inputs: list[str], outputs: list[str], labels: list[str], scores: list[float]
+    ) -> None:
+        """Log a table of validation samples"""
+        if self.config.trainer.val_generations_to_log <= 0:
+            return
+
+        # Create tuples of (input, output, score) and sort by input text
+        samples = list(zip(inputs, outputs, labels, scores))
+        samples.sort(key=lambda x: x[0])  # Sort by input text
+
+        # Use fixed random seed for deterministic shuffling
+        rng = np.random.RandomState(42)
+        rng.shuffle(samples)
+
+        samples = samples[: self.config.trainer.val_generations_to_log]
+        self.logger.log_generation(samples, self.global_step)
+
+    def _validate(self) -> dict[str, Any]:
+        reward_tensor_lst = []
+        # Lists to collect samples for the table
+        sample_inputs, sample_outputs, sample_labels, sample_scores = [], [], [], []
+        reward_metrics_lst = defaultdict(list)
+        type_metrics_lst: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+        length_metrics_lst = defaultdict(list)
+        print("Start validation...")
+        if self.config.trainer.save_rollout_to_file:
+            rollout_dir = os.path.join(self.config.trainer.save_checkpoint_path, "rollouts")
+            filepath = _rollout_filepath(rollout_dir, phase="val", step=self.global_step)
+            media_filepath = _rollout_media_filepath(rollout_dir, phase="val", step=self.global_step)
+            for path in (filepath, media_filepath):
+                if os.path.exists(path):
+                    os.remove(path)
+        self.actor_rollout_ref_wg.prepare_rollout_engine()
+        val_iterator = iter(self.val_dataloader)
+        while True:
+            set_gpu_phase("val_decode")
+            try:
+                batch_dict = next(val_iterator)
+            except StopIteration:
+                break
+            finally:
+                set_gpu_phase("val_idle")
+
+            test_batch = DataProto.from_single_dict(batch_dict)
+            test_batch.non_tensor_batch["uid"] = np.array(
+                [f"val-{uuid.uuid4()}" for _ in range(len(test_batch.batch))], dtype=object
+            )
+            test_gen_batch = test_batch.pop(
+                batch_keys=["input_ids", "attention_mask", "position_ids"],
+                non_tensor_batch_keys=["raw_prompt_ids", "multi_modal_data"],
+            )
+            multimodal_sources = test_gen_batch.non_tensor_batch.get("multi_modal_data", np.array([], dtype=object))
+            repeat_times = self.config.worker.rollout.val_override_config.get("n", 1)
+            test_gen_batch.meta_info = self.config.worker.rollout.val_override_config
+            test_gen_batch.meta_info["min_pixels"] = self.config.data.min_pixels
+            test_gen_batch.meta_info["max_pixels"] = self.config.data.max_pixels
+            test_gen_batch.meta_info["video_fps"] = self.config.data.video_fps
+
+            test_gen_batch, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_ref_wg.world_size)
+            test_output_gen_batch = self.actor_rollout_ref_wg.generate_sequences(test_gen_batch)
+            test_output_gen_batch = unpad_dataproto(test_output_gen_batch, pad_size=pad_size * repeat_times)
+            set_gpu_phase("val_idle")
+
+            # repeat to align with repeated responses in rollout
+            test_batch = test_batch.repeat(repeat_times=repeat_times, interleave=True)
+            test_batch = test_batch.union(test_output_gen_batch)
+
+            # evaluate using reward_function
+            reward_tensor, reward_metrics, _ = _unpack_reward_output(ray.get(self.val_reward_fn.compute_reward.remote(test_batch)))
+            set_gpu_phase("val_idle")
+
+            repeated_multimodal_sources = np.repeat(multimodal_sources, repeat_times, axis=0)
+            self._save_val_rollouts(
+                test_batch,
+                reward_tensor=reward_tensor,
+                multimodal_sources=repeated_multimodal_sources.tolist(),
+            )
+
+            # store generations
+            input_ids = test_batch.batch["prompts"]
+            input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
+            output_ids = test_batch.batch["responses"]
+            output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
+            scores = reward_tensor.sum(-1).cpu().tolist()
+            set_gpu_phase("val_idle")
+            sample_inputs.extend(input_texts)
+            sample_outputs.extend(output_texts)
+            sample_labels.extend(test_batch.non_tensor_batch["ground_truth"].tolist())
+            sample_scores.extend(scores)
+
+            reward_tensor_lst.append(reward_tensor)
+            for key, value in reward_metrics.items():
+                reward_metrics_lst[key].extend(value)
+
+            # Collect per-problem-type metrics
+            problem_types = test_batch.non_tensor_batch.get("problem_type", None)
+            if problem_types is not None:
+                metric_keys = list(reward_metrics.keys())
+                metric_values = list(reward_metrics.values())
+                for i, pt in enumerate(problem_types):
+                    for mk, mv in zip(metric_keys, metric_values):
+                        type_metrics_lst[str(pt)][mk].append(mv[i])
+
+            for key, value in compute_length_metrics(test_batch).items():
+                length_metrics_lst[key].append(value)
+
+        self.actor_rollout_ref_wg.release_rollout_engine()
+        self._maybe_log_val_generations(sample_inputs, sample_outputs, sample_labels, sample_scores)
+        self.val_reward_score = torch.cat(reward_tensor_lst, dim=0).sum(-1).mean().item()
+        val_reward_metrics = {f"val/{key}_reward": value for key, value in reduce_metrics(reward_metrics_lst).items()}
+        # Per-problem-type metrics
+        for pt, pt_metrics in type_metrics_lst.items():
+            for mk, mv in pt_metrics.items():
+                val_reward_metrics[f"val/{pt}/{mk}_reward"] = np.mean(mv)
+            val_reward_metrics[f"val/{pt}/count"] = len(pt_metrics.get("overall", []))
+        val_length_metrics = {f"val_{key}": value for key, value in reduce_metrics(length_metrics_lst).items()}
+        print("Finish validation.")
+        return {"val/reward_score": self.val_reward_score, **val_reward_metrics, **val_length_metrics}
+
+    def _balance_batch(self, batch: DataProto, metrics: dict[str, Any], logging_prefix: str = "global_seqlen") -> None:
+        """Reorder the data on single controller such that each dp rank gets similar total tokens"""
+        attention_mask = batch.batch["attention_mask"]
+        batch_size = attention_mask.shape[0]
+        global_seqlen_lst = batch.batch["attention_mask"].view(batch_size, -1).sum(-1).tolist()  # (train_batch_size,)
+        world_size = self.actor_rollout_ref_wg.world_size
+        global_partition_lst = get_seqlen_balanced_partitions(
+            global_seqlen_lst, k_partitions=world_size, equal_size=True
+        )
+        # reorder based on index. The data will be automatically equally partitioned by dispatch function
+        global_idx = torch.tensor([j for partition in global_partition_lst for j in partition])
+        batch.reorder(global_idx)
+        global_balance_stats = log_seqlen_unbalance(
+            seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix
+        )
+        metrics.update(global_balance_stats)
+
+    def _log_filtered_samples(self, batch: DataProto, filtered_idxs: list[int],
+                              reward_metrics: dict, uid2mean: dict):
+        """Log filtered-out samples to a JSONL file for analysis."""
+        log_path = os.path.join(self.config.trainer.save_checkpoint_path, "filtered_samples.jsonl")
+        response_ids = batch.batch["responses"]
+        response_mask = batch.batch["response_mask"]
+        uids = batch.non_tensor_batch["uid"]
+        try:
+            with open(log_path, "a") as f:
+                for idx in filtered_idxs:
+                    resp_len = int(response_mask[idx].sum().item())
+                    response_text = self.tokenizer.decode(
+                        response_ids[idx][:resp_len], skip_special_tokens=True
+                    )
+                    record = {
+                        "step": self.global_step,
+                        "uid": str(uids[idx]),
+                        "uid_mean_reward": float(uid2mean.get(str(uids[idx]), 0)),
+                        "problem_type": str(batch.non_tensor_batch.get("problem_type", [""])[idx]),
+                        "ground_truth": str(batch.non_tensor_batch.get("ground_truth", [""])[idx]),
+                        "response": response_text[:500],
+                        "reward": {k: float(v[idx]) for k, v in reward_metrics.items() if idx < len(v)},
+                    }
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"[online_filtering] Failed to log filtered samples: {e}")
+
+    def _make_batch_data(self, metrics: dict[str, Any], timing_raw: dict[str, float] = None) -> DataProto:
+        batch = None
+        all_metrics = defaultdict(list)
+        filtered_metrics = defaultdict(list)
+        num_try_make_batch = 0
+        print("Start generating batch...")
+        while True:
+            num_try_make_batch += 1
+            set_gpu_phase("decode")
+            try:
+                batch_dict = next(self.data_iterator)
+            except StopIteration:
+                self.data_iterator = iter(self.train_dataloader)
+                batch_dict = next(self.data_iterator)
+            finally:
+                set_gpu_phase("idle")
+
+            # Track consumed samples for epoch monitoring
+            batch_len = len(batch_dict[next(iter(batch_dict))])
+            self._consumed_samples += batch_len
+
+            meta_info = {
+                "min_pixels": self.config.data.min_pixels,
+                "max_pixels": self.config.data.max_pixels,
+                "video_fps": self.config.data.video_fps,
+            }
+            new_batch: DataProto = DataProto.from_single_dict(batch_dict, meta_info=meta_info)
+            new_batch.non_tensor_batch["uid"] = np.array(
+                [str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object
+            )
+
+            # pop those keys for generation
+            gen_batch = new_batch.pop(
+                batch_keys=["input_ids", "attention_mask", "position_ids"],
+                non_tensor_batch_keys=["raw_prompt_ids", "multi_modal_data"],
+                meta_info_keys=["min_pixels", "max_pixels", "video_fps"],
+            )
+
+            # generate a batch
+            import time as _time
+            _gen_t0 = _time.time()
+            gen_batch_output = self.actor_rollout_ref_wg.generate_sequences(gen_batch)
+            _gen_t1 = _time.time()
+            if timing_raw is not None:
+                timing_raw[f"gen/iter_{num_try_make_batch}/generate"] = _gen_t1 - _gen_t0
+            tlog(f"[make_batch] iter={num_try_make_batch} generate_sequences: {_gen_t1 - _gen_t0:.2f}s")
+
+            if self.config.algorithm.adv_estimator == "remax":
+                gen_baseline_batch = deepcopy(gen_batch)
+                gen_baseline_batch.meta_info["temperature"] = 0
+                gen_baseline_batch.meta_info["n"] = 1
+                gen_baseline_output = self.actor_rollout_ref_wg.generate_sequences(gen_baseline_batch)
+
+                new_batch = new_batch.union(gen_baseline_output)
+                reward_baseline_tensor, _, _ = _unpack_reward_output(ray.get(self.reward_fn.compute_reward.remote(new_batch)))
+                reward_baseline_tensor = reward_baseline_tensor.sum(dim=-1)
+
+                new_batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
+                new_batch.batch["reward_baselines"] = reward_baseline_tensor
+                del gen_baseline_batch, gen_baseline_output
+
+            # repeat to align with repeated responses in rollout
+            new_batch = new_batch.repeat(repeat_times=self.config.worker.rollout.n, interleave=True)
+            new_batch = new_batch.union(gen_batch_output)
+
+            # filter group
+            if self.config.algorithm.online_filtering:
+                _reward_t0 = _time.time()
+                reward_tensor, reward_metrics, reward_extra_tensors = _unpack_reward_output(
+                    ray.get(self.reward_fn.compute_reward.remote(new_batch))
+                )
+                _reward_t1 = _time.time()
+                if timing_raw is not None:
+                    timing_raw[f"gen/iter_{num_try_make_batch}/reward"] = _reward_t1 - _reward_t0
+                tlog(f"[make_batch] iter={num_try_make_batch} reward compute: {_reward_t1 - _reward_t0:.2f}s")
+                new_batch.batch["token_level_scores"] = reward_tensor
+                _attach_reward_extra_tensors(new_batch, reward_extra_tensors)
+                for k, v in reward_metrics.items():
+                    all_metrics[k].extend(v)
+
+                filter_scores = reward_metrics[self.config.algorithm.filter_key]
+                uids = new_batch.non_tensor_batch["uid"]
+                uid2scores = defaultdict(list)
+                for uid, score in zip(uids, filter_scores):
+                    uid2scores[uid].append(score)
+
+                uid2mean = {uid: np.mean(scores) for uid, scores in uid2scores.items()}
+                kept_uids = [
+                    uid
+                    for uid, avg_score in uid2mean.items()
+                    if avg_score > self.config.algorithm.filter_low and avg_score < self.config.algorithm.filter_high
+                ]
+                kept_sample_idxs = [idx for idx, uid in enumerate(uids) if uid in kept_uids]
+
+                # Log filtered-out samples to JSONL file
+                filtered_out_idxs = [idx for idx in range(len(uids)) if idx not in set(kept_sample_idxs)]
+                if filtered_out_idxs:
+                    self._log_filtered_samples(new_batch, filtered_out_idxs, reward_metrics, uid2mean)
+
+                if len(kept_sample_idxs) == 0:
+                    print(
+                        "[online_filtering] No sample kept after filtering "
+                        f"(try={num_try_make_batch}, filter_low={self.config.algorithm.filter_low}, "
+                        f"filter_high={self.config.algorithm.filter_high})."
+                    )
+                    metrics["debug/online_filtering_empty_group"] = (
+                        metrics.get("debug/online_filtering_empty_group", 0) + 1
+                    )
+                    max_try_make_batch = self.config.trainer.max_try_make_batch
+                    if max_try_make_batch <= 0 or num_try_make_batch < max_try_make_batch:
+                        print("[online_filtering] Skip this generated batch and retry.")
+                        continue
+
+                    print(
+                        "[online_filtering] Reached max_try_make_batch; "
+                        "fallback to unfiltered batch for this step."
+                    )
+                else:
+                    new_batch = new_batch[kept_sample_idxs]
+                    # collect filtered reward metrics
+                    for k, v in reward_metrics.items():
+                        filtered_metrics[k].extend([v[i] for i in kept_sample_idxs])
+
+            batch = DataProto.concat([batch, new_batch]) if batch is not None else new_batch
+            current_batch_size = len(batch) // self.config.worker.rollout.n
+            rollout_batch_size = self.config.data.rollout_batch_size
+            if current_batch_size < rollout_batch_size:
+                print(f"{current_batch_size=} < {rollout_batch_size=}")
+                max_try_make_batch = self.config.trainer.max_try_make_batch
+                if max_try_make_batch <= 0 or num_try_make_batch < max_try_make_batch:
+                    print(f"{num_try_make_batch=}. Continue generating...")
+                else:
+                    raise RuntimeError(
+                        f"{num_try_make_batch=} >= {max_try_make_batch=}. Generated too many. Please check your data."
+                    )
+            else:
+                print(f"{current_batch_size=} >= {rollout_batch_size=}. Finish generating.")
+                if self.config.algorithm.online_filtering:
+                    metrics.update({f"reward/{k}": v for k, v in reduce_metrics(all_metrics).items()})
+                    if filtered_metrics:
+                        metrics.update({f"reward_filtered/{k}": v for k, v in reduce_metrics(filtered_metrics).items()})
+                    n_all = len(all_metrics.get("overall", []))
+                    n_kept = len(filtered_metrics.get("overall", []))
+                    metrics["debug/online_filtering_keep_ratio"] = n_kept / max(n_all, 1)
+                    tlog(f"[make_batch] reward all={n_all} kept={n_kept} "
+                          f"keep_ratio={n_kept / max(n_all, 1):.3f}")
+
+                return batch[: self.config.data.rollout_batch_size * self.config.worker.rollout.n]
+
+    def fit(self):
+        """
+        The training loop of PPO.
+        The driver process only need to call the compute functions of the worker group through RPC to construct the PPO dataflow.
+        The light-weight advantage computation is done on the driver process.
+        """
+        self.logger = Tracker(loggers=self.config.trainer.logger, config=self.config.to_dict())
+        init_timing_log(self.config.trainer.save_checkpoint_path)
+        register_cleanup()
+        self.global_step = 0
+        main_tqdm = tqdm(range(self.training_steps), desc="Running step", position=0)
+        val_metrics: Optional[dict[str, Any]] = None
+
+        # load checkpoint before doing anything
+        self._load_checkpoint()
+        main_tqdm.update(self.global_step)
+
+        # perform validation before training
+        # currently, we only support validation using the reward_function.
+        if self.val_reward_fn is not None and self.config.trainer.val_before_train:
+            val_metrics = self._validate()
+            self.logger.log(data=val_metrics, step=self.global_step)
+            if self.config.trainer.val_only:
+                return
+
+        self.data_iterator = iter(self.train_dataloader)
+        while self.global_step < self.training_steps:
+            self.global_step += 1
+
+            metrics, timing_raw = {}, {}
+            with timer("step", timing_raw):
+                # make a batch of data
+                with timer("gen", timing_raw):
+                    with timer("gen/prepare", timing_raw):
+                        self.actor_rollout_ref_wg.prepare_rollout_engine()
+                    with timer("gen/make_batch", timing_raw):
+                        batch = self._make_batch_data(metrics=metrics, timing_raw=timing_raw)
+                    with timer("gen/release", timing_raw):
+                        self.actor_rollout_ref_wg.release_rollout_engine()
+
+                # balance the number of valid tokens on each dp rank.
+                # NOTE: this breaks the order of data inside the batch.
+                # Please take care when you implement group based adv computation such as GRPO and rloo
+                self._balance_batch(batch, metrics=metrics)
+
+                # compute global valid tokens
+                batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+
+                if self.use_opd:
+                    with timer("teacher", timing_raw):
+                        teacher_topk = self.actor_rollout_ref_wg.compute_ref_topk_log_probs(batch)
+                        batch = batch.union(teacher_topk)
+
+                    self._save_train_rollouts(batch)
+
+                    with timer("update_actor", timing_raw):
+                        actor_output = self.actor_rollout_ref_wg.update_actor(batch)
+
+                    actor_metrics = reduce_metrics(actor_output.non_tensor_batch)
+                    metrics.update(actor_metrics)
+                else:
+                    # compute reward
+                    if "token_level_scores" not in batch.batch:
+                        with timer("reward", timing_raw):
+                            reward_ref = self.reward_fn.compute_reward.remote(batch)
+
+                    # recompute old_log_probs
+                    with timer("old", timing_raw):
+                        old_log_probs = self.actor_rollout_ref_wg.compute_log_probs(batch)
+                        batch = batch.union(old_log_probs)
+
+                    # compute ref_log_probs
+                    if self.use_reference_policy:
+                        with timer("ref", timing_raw):
+                            ref_log_probs = self.actor_rollout_ref_wg.compute_ref_log_probs(batch)
+                            batch = batch.union(ref_log_probs)
+
+                    # compute values
+                    if self.use_critic:
+                        with timer("values", timing_raw):
+                            values = self.critic_wg.compute_values(batch)
+                            batch = batch.union(values)
+
+                    with timer("adv", timing_raw):
+                        if "token_level_scores" not in batch.batch:
+                            # get token level scores asynchronously
+                            reward_tensor, reward_metrics, reward_extra_tensors = _unpack_reward_output(ray.get(reward_ref))
+                            batch.batch["token_level_scores"] = reward_tensor
+                            _attach_reward_extra_tensors(batch, reward_extra_tensors)
+                            reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
+                            metrics.update(reward_metrics)
+
+                            # 按任务类型统计奖励
+                            problem_types = batch.non_tensor_batch.get("problem_type", [None] * len(reward_tensor))
+                            task_rewards = {}
+                            for pidx, ptype in enumerate(problem_types):
+                                if ptype not in task_rewards:
+                                    task_rewards[ptype] = []
+                                task_rewards[ptype].append(reward_tensor[pidx].sum().item())
+
+                            # 计算每个任务的平均奖励并记录
+                            for task_type, task_scores in task_rewards.items():
+                                if task_scores:
+                                    avg_reward = sum(task_scores) / len(task_scores)
+                                    metrics[f"reward/{task_type}"] = avg_reward
+
+                        # apply kl penalty if available
+                        if not self.config.algorithm.use_kl_loss and self.use_reference_policy:
+                            # apply kl penalty to reward
+                            batch, kl_metrics = apply_kl_penalty(batch, self.kl_ctrl, self.config.algorithm.kl_penalty)
+                            metrics.update(kl_metrics)
+                        else:
+                            batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
+
+                        # compute advantages, executed on the driver process
+                        batch = compute_advantage(
+                            batch,
+                            adv_estimator=self.config.algorithm.adv_estimator,
+                            gamma=self.config.algorithm.gamma,
+                            lam=self.config.algorithm.lam,
+                        )
+
+                    # save training rollouts to file (every step)
+                    self._save_train_rollouts(batch)
+
+                    # update critic
+                    if self.use_critic:
+                        with timer("update_critic", timing_raw):
+                            critic_output = self.critic_wg.update_critic(batch)
+
+                        critic_metrics = reduce_metrics(critic_output.non_tensor_batch)
+                        metrics.update(critic_metrics)
+
+                    # update actor
+                    if self.config.trainer.critic_warmup <= self.global_step:
+                        with timer("update_actor", timing_raw):
+                            actor_output = self.actor_rollout_ref_wg.update_actor(batch)
+
+                        actor_metrics = reduce_metrics(actor_output.non_tensor_batch)
+                        metrics.update(actor_metrics)
+
+                # validate
+                if (
+                    self.val_reward_fn is not None
+                    and self.config.trainer.val_freq > 0
+                    and self.global_step % self.config.trainer.val_freq == 0
+                ):
+                    with timer("validation", timing_raw):
+                        val_metrics = self._validate()
+
+                    metrics.update(val_metrics)
+
+                    # Save checkpoint if new best validation score is detected
+                    if (
+                        self.config.trainer.save_best
+                        and self.val_reward_score > self.best_val_reward_score
+                        and self.global_step % self.config.trainer.save_freq != 0  # avoid duplicate save
+                    ):
+                        print(
+                            f"New best val score: {self.val_reward_score:.4f} "
+                            f"(prev: {self.best_val_reward_score:.4f}), saving checkpoint."
+                        )
+                        with timer("save_best_checkpoint", timing_raw):
+                            self._save_checkpoint()
+
+                if self.config.trainer.save_freq > 0 and self.global_step % self.config.trainer.save_freq == 0:
+                    with timer("save_checkpoint", timing_raw):
+                        self._save_checkpoint()
+
+            # collect metrics
+            num_gpus = self.resource_pool_manager.get_num_gpus()
+            if self.use_opd:
+                metrics.update(compute_opd_data_metrics(batch=batch))
+            else:
+                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+            metrics["debug/consumed_samples"] = self._consumed_samples
+            metrics["debug/effective_epoch"] = self._consumed_samples / max(self._dataset_size, 1)
+            metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+            metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, num_gpus=num_gpus))
+            log_timing(step=self.global_step, timing_raw=timing_raw)
+
+            self.logger.log(data=metrics, step=self.global_step)
+            main_tqdm.update()
+
+        # perform validation after training
+        if self.val_reward_fn is not None and not self.config.trainer.skip_final_validation:
+            if (
+                val_metrics is None
+                or self.config.trainer.val_freq <= 0
+                or self.global_step % self.config.trainer.val_freq != 0
+            ):
+                val_metrics = self._validate()
+                self.logger.log(data=val_metrics, step=self.global_step)
+
+            print(f"Final validation metrics:\n{convert_dict_to_str(unflatten_dict(val_metrics))}")
+        elif self.val_reward_fn is not None:
+            print("[validation] Skipping final validation by configuration.")
+
+        if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
+            self._save_checkpoint()
+
+        clear_gpu_phase()

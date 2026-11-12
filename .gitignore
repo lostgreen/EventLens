@@ -1,2 +1,15 @@
 .DS_Store
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+.env
+outputs/
+checkpoints/
+wandb/
+tensorboard_log/
+/data/

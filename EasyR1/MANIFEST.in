@@ -1,0 +1,6 @@
+include README.md LICENSE NOTICE requirements.txt
+recursive-include requirements *.txt
+recursive-include configs *.yaml
+recursive-include scripts *.py
+recursive-include tests *.py
+recursive-include video_proxy *.sh *.md

@@ -1,0 +1,43 @@
+extends: ../base.yaml
+release:
+  recipe_id: paper_student_4b
+  dataset_version: vpmixed_20260516_full_comp
+  prompt_mode: no_cot
+  mix: composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema
+  validation_role: monitor_val
+  reproduction_status: reconstructed_pending_gpu_validation
+data:
+  max_response_length: 256
+  val_batch_size: 64
+  task_homogeneous_batching: true
+  task_homogeneous_grouping: opd_task_group
+algorithm:
+  training_mode: opd
+  adv_estimator: grpo
+  use_kl_loss: false
+  online_filtering: false
+  opd_topk: 10
+  opd_kl_coef: 1.0
+worker:
+  actor:
+    micro_batch_size_per_device_for_experience: 1
+    entropy_coeff: 0.0
+    offload:
+      offload_params: true
+      offload_optimizer: true
+  ref:
+    teacher_key: problem_type
+    teacher_models:
+      aot: {model_path: null, trust_remote_code: false}
+      seg: {model_path: null, trust_remote_code: false}
+      eventlogic: {model_path: null, trust_remote_code: false}
+    offload:
+      offload_params: true
+  rollout:
+    n: 1
+    temperature: 1.0
+    gpu_memory_utilization: 0.45
+    max_num_seqs: 64
+trainer:
+  experiment_name: paper_student_4b
+  val_before_train: true

@@ -1,0 +1,17 @@
+schema_version: 1
+dataset_version: cot_v1
+parent_dataset_version: vpmixed_20260516_full_comp
+status: generate_locally_with_prepare_cot_view
+prompt_mode: cot
+reasoning_tag: thought
+contains_gold_reasoning: false
+supported_views: [seg_teacher, prog_teacher, relation_teacher]
+output_layout: mixes/cot_v1/VIEW
+derived_assets: [train.jsonl, val.jsonl, parent_map.jsonl, conversion_manifest.json]
+contract:
+  preserve_answers_and_media: true
+  preserve_frame_order_and_timestamps: true
+  preserve_split_membership: true
+  convert_tg_and_mcq_base_rows: true
+  refuse_unsupported_prompts: true
+  validation_role: monitor_val

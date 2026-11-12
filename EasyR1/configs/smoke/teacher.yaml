@@ -1,0 +1,25 @@
+extends: ../paper/seg_teacher.yaml
+release:
+  recipe_id: smoke_teacher
+  reproduction_status: environment_smoke_only
+data:
+  rollout_batch_size: 8
+  val_batch_size: 8
+  dataloader_num_workers: 0
+  dataloader_persistent_workers: false
+  dataloader_pin_memory: false
+worker:
+  actor:
+    global_batch_size: 8
+  rollout:
+    n: 2
+    max_num_seqs: 16
+    gpu_memory_utilization: 0.35
+trainer:
+  experiment_name: smoke_teacher
+  n_gpus_per_node: 2
+  max_steps: 5
+  val_before_train: false
+  val_freq: 5
+  save_freq: 5
+  save_limit: 1

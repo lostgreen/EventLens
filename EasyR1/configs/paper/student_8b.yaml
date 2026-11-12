@@ -1,0 +1,9 @@
+extends: student_4b.yaml
+release:
+  recipe_id: paper_student_8b
+worker:
+  actor:
+    model:
+      model_path: Qwen/Qwen3-VL-8B-Instruct
+trainer:
+  experiment_name: paper_student_8b

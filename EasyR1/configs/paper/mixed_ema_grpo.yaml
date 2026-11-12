@@ -1,0 +1,6 @@
+extends: seg_teacher.yaml
+release:
+  recipe_id: paper_mixed_ema_grpo
+  mix: composition_base_seg_logic_aot_hier10k_el10k_aot10k_mf256_ema
+trainer:
+  experiment_name: paper_mixed_ema_grpo

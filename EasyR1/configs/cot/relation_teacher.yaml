@@ -1,0 +1,6 @@
+extends: base.yaml
+release:
+  recipe_id: cot_relation_teacher
+  mix: relation_teacher
+trainer:
+  experiment_name: cot_relation_teacher

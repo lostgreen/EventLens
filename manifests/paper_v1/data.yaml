@@ -1,0 +1,33 @@
+schema_version: 1
+dataset_version: vpmixed_20260516_full_comp
+public_version: paper_v1
+status: metadata_audited_sample_manifest_pending
+prompt_mode: no_cot
+evidence:
+  checked_at: 2026-10-04
+  method: existing_release_stats_and_manifest
+  full_frame_rescan: false
+tasks:
+  tg: {train: 4791, monitor_val: 600}
+  mcq: {train: 2637, monitor_val: 600}
+  seg: {train: 10000, monitor_val: 150}
+  prog: {train: 10000, monitor_val: 300, internal_task_name: aot}
+  relation: {train: 10000, monitor_val: 300, internal_task_name: logic}
+full_mix: {train: 37428, monitor_val: 1950}
+specialist_mix_train_count: 17428
+compat_layout: compat/multi_task/experiments
+media:
+  expected_frame_cap: 256
+  preserve_frame_order_and_timestamp_metadata: true
+  distribution_status: source_rights_review_pending
+validation:
+  role: monitor_val
+  historical_exact_row_overlap:
+    prog: 300
+    relation: 112
+  independent_generalization_claim: false
+provenance_pending:
+  - selected_sample_ids_and_source_video_ids
+  - immutable_source_revisions
+  - per_file_checksums_and_split_membership
+  - portable_media_and_metadata_paths

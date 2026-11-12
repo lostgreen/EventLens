@@ -1,0 +1,5 @@
+omegaconf>=2.3,<2.4
+PyYAML>=6,<7
+numpy
+codetiming
+packaging

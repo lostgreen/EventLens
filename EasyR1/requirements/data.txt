@@ -1,0 +1,7 @@
+-r config.txt
+Pillow
+openai
+requests
+opencv-python-headless
+scenedetect
+pyarrow>=15

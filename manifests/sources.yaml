@@ -1,0 +1,26 @@
+schema_version: 1
+sources:
+  et_instruct:
+    official_url: https://huggingface.co/datasets/PolyU-ChenLab/ET-Instruct-164K
+    annotation_license: CC-BY-NC-SA-4.0
+    revision: unknown
+    paper_usage: three_proxy_training_sources
+    media_redistribution: review_pending
+  timelens:
+    official_url: https://huggingface.co/datasets/TencentARC/TimeLens-100K
+    annotation_license: BSD-3-Clause
+    revision: unknown
+    paper_usage: tg_selected_3000
+    media_redistribution: review_pending
+  timerft:
+    official_url: https://github.com/xiaomi-research/time-r1
+    annotation_license: review_pending
+    revision: unknown
+    paper_usage: tg_1791_and_tvgbench_monitor_val
+    media_redistribution: review_pending
+  mcq_base:
+    official_url: unknown
+    annotation_license: review_pending
+    revision: unknown
+    paper_usage: base_plus_llava_split_membership_pending
+    media_redistribution: review_pending

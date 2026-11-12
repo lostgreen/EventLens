@@ -1,0 +1,46 @@
+schema_version: 1
+status: candidates_located_headers_verified_payload_and_paper_binding_pending
+verification:
+  checked_at_utc: '2026-10-04T12:59:39.500498+00:00'
+  scope: metadata_and_safetensors_headers_only
+  config_tokenizer_processor_files_present: true
+  shard_indices_and_header_offsets_match: true
+  weight_dtype: BF16
+  full_weight_sha256_checked: false
+  fresh_model_load_checked: false
+  final_submission_table_binding: pending
+base_models:
+  specialist: {id: Qwen/Qwen3-VL-4B-Instruct, revision: unknown}
+  student_4b: {id: Qwen/Qwen3-VL-4B-Instruct, revision: unknown}
+  student_8b: {id: Qwen/Qwen3-VL-8B-Instruct, revision: unknown}
+teacher_candidates:
+  seg: {step: 250, evidence: current_mopd_launcher_default, hf_shards: 2, weight_bytes: 9653631760}
+  prog: {step: 200, routing_name: aot, evidence: current_mopd_launcher_default, hf_shards: 2, weight_bytes: 9653631752}
+  relation: {step: 272, routing_name: eventlogic, evidence: current_mopd_launcher_default, hf_shards: 2, weight_bytes: 9653631768}
+student_candidates:
+  4b:
+    run_name: mopd_qwen3vl4b_full_comp_4b_teachers_bs64_mf256_epoch1_save50
+    step: 583
+    prompt_mode: no_cot
+    training_commit: unknown
+    hf_shards: 2
+    weight_bytes: 9653631832
+    eval_copy_comparison:
+      metadata_header_hashes_and_sizes_equal: true
+      same_weight_inodes: false
+      full_payload_equality: unverified
+  8b:
+    run_name: mopd_qwen3vl8b_full_comp_4b_teachers_bs64_mf256_epoch1_save50_keep1
+    step: 583
+    teacher_size: 4b
+    prompt_mode: no_cot
+    training_commit: unknown
+    hf_shards: 4
+    weight_bytes: 17534339504
+pending:
+  - exact_historical_resolved_configs
+  - base_and_teacher_revisions
+  - processor_chat_template_and_model_loading
+  - full_weight_payload_integrity_and_4b_eval_copy_equality
+  - exported_weight_checksums
+  - final_submission_table_binding

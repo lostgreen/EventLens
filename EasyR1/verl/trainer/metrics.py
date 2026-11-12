@@ -1,0 +1,241 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from typing import Any
+
+import numpy as np
+import torch
+
+from ..protocol import DataProto
+
+
+def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
+    return {key: np.mean(value) for key, value in metrics.items()}
+
+
+def _flatten_numeric_values(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().tolist()
+    elif isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        values: list[float] = []
+        for item in value:
+            values.extend(_flatten_numeric_values(item))
+        return values
+    try:
+        return [float(value)]
+    except (TypeError, ValueError):
+        return []
+
+
+def _as_bool_float(value: Any) -> float:
+    return 1.0 if bool(value) else 0.0
+
+
+def compute_cot_budget_metrics(debug_values: Any) -> dict[str, Any]:
+    """Summarize rollout CoT-budget debug records into scalar log metrics."""
+
+    if debug_values is None:
+        return {}
+    if isinstance(debug_values, np.ndarray):
+        debug_values = debug_values.tolist()
+
+    records = [item for item in debug_values if isinstance(item, dict)]
+    records = [item for item in records if bool(item.get("cot_budget_enabled", False))]
+    if not records:
+        return {}
+
+    def mean_flag(key: str) -> float:
+        return float(np.mean([_as_bool_float(item.get(key, False)) for item in records]))
+
+    metrics: dict[str, Any] = {
+        "cot_budget/enabled_ratio": 1.0,
+        "cot_budget/start_detected_ratio": mean_flag("cot_start_detected"),
+        "cot_budget/end_detected_ratio": mean_flag("cot_end_detected"),
+        "cot_budget/repaired_ratio": mean_flag("cot_repaired"),
+        "cot_budget/text_fallback_ratio": mean_flag("cot_text_fallback_used"),
+    }
+
+    for key in (
+        "raw_token_len",
+        "repaired_token_len",
+        "remaining_tokens",
+        "continuation_token_len",
+        "final_token_len",
+        "max_cot_tokens",
+    ):
+        values = _flatten_numeric_values([item.get(key) for item in records])
+        if not values:
+            continue
+        arr = np.array(values, dtype=np.float64)
+        metrics[f"cot_budget/{key}_mean"] = float(arr.mean())
+        metrics[f"cot_budget/{key}_max"] = float(arr.max())
+        metrics[f"cot_budget/{key}_min"] = float(arr.min())
+
+    return metrics
+
+
+def compute_length_metrics(batch: DataProto) -> dict[str, Any]:
+    max_response_length = batch.batch["responses"].size(-1)
+    max_prompt_length = batch.batch["attention_mask"].size(-1) - max_response_length
+
+    prompt_length = batch.batch["attention_mask"][:, :-max_response_length].sum(-1).float()
+    response_length = batch.batch["attention_mask"][:, -max_response_length:].sum(-1).float()
+
+    metrics = {
+        # response length
+        "response_length/mean": torch.mean(response_length).detach().item(),
+        "response_length/max": torch.max(response_length).detach().item(),
+        "response_length/min": torch.min(response_length).detach().item(),
+        "response_length/clip_ratio": torch.eq(response_length, max_response_length).float().mean().detach().item(),
+        # prompt length
+        "prompt_length/mean": torch.mean(prompt_length).detach().item(),
+        "prompt_length/max": torch.max(prompt_length).detach().item(),
+        "prompt_length/min": torch.min(prompt_length).detach().item(),
+        "prompt_length/clip_ratio": torch.eq(prompt_length, max_prompt_length).float().mean().detach().item(),
+    }
+
+    visual_keys = (
+        ("visual_token_count", "visual_token_count"),
+        ("video_visual_token_count", "video_visual_token_count"),
+        ("image_visual_token_count", "image_visual_token_count"),
+    )
+    for key, metric_name in visual_keys:
+        if key in batch.batch:
+            values = batch.batch[key].float()
+            metrics[f"{metric_name}/mean"] = torch.mean(values).detach().item()
+            metrics[f"{metric_name}/max"] = torch.max(values).detach().item()
+            metrics[f"{metric_name}/min"] = torch.min(values).detach().item()
+            metrics[f"{metric_name}/ratio_in_prompt_mean"] = (
+                values / torch.clamp(prompt_length, min=1.0)
+            ).mean().detach().item()
+
+    # video_nframes / video_fps from multi_modal_data (non-tensor)
+    mm_data = batch.non_tensor_batch.get("multi_modal_data", [])
+    for field in ("video_nframes", "video_fps"):
+        vals = []
+        for d in mm_data:
+            if isinstance(d, dict):
+                vals.extend(_flatten_numeric_values(d.get(field)))
+        if vals:
+            arr = np.array(vals, dtype=np.float64)
+            metrics[f"{field}/mean"] = float(arr.mean())
+            metrics[f"{field}/max"] = float(arr.max())
+            metrics[f"{field}/min"] = float(arr.min())
+
+    metrics.update(compute_cot_budget_metrics(batch.non_tensor_batch.get("cot_budget_debug")))
+    return metrics
+
+
+def compute_data_metrics(batch: DataProto, use_critic: bool = False) -> dict[str, Any]:
+    sequence_score = batch.batch["token_level_scores"].sum(-1)
+    sequence_reward = batch.batch["token_level_rewards"].sum(-1)
+
+    advantages = batch.batch["advantages"]
+    returns = batch.batch["returns"]
+
+    max_response_length = batch.batch["responses"].size(-1)
+    response_mask = batch.batch["attention_mask"][:, -max_response_length:].bool()
+
+    valid_adv = torch.masked_select(advantages, response_mask)
+    valid_returns = torch.masked_select(returns, response_mask)
+
+    if use_critic:
+        values = batch.batch["values"]
+        valid_values = torch.masked_select(values, response_mask)
+        return_diff_var = torch.var(valid_returns - valid_values)
+        return_var = torch.var(valid_returns)
+
+    return {
+        # score
+        "critic/score/mean": torch.mean(sequence_score).detach().item(),
+        "critic/score/max": torch.max(sequence_score).detach().item(),
+        "critic/score/min": torch.min(sequence_score).detach().item(),
+        # reward
+        "critic/rewards/mean": torch.mean(sequence_reward).detach().item(),
+        "critic/rewards/max": torch.max(sequence_reward).detach().item(),
+        "critic/rewards/min": torch.min(sequence_reward).detach().item(),
+        # adv
+        "critic/advantages/mean": torch.mean(valid_adv).detach().item(),
+        "critic/advantages/max": torch.max(valid_adv).detach().item(),
+        "critic/advantages/min": torch.min(valid_adv).detach().item(),
+        # returns
+        "critic/returns/mean": torch.mean(valid_returns).detach().item(),
+        "critic/returns/max": torch.max(valid_returns).detach().item(),
+        "critic/returns/min": torch.min(valid_returns).detach().item(),
+        **(
+            {
+                # values
+                "critic/values/mean": torch.mean(valid_values).detach().item(),
+                "critic/values/max": torch.max(valid_values).detach().item(),
+                "critic/values/min": torch.min(valid_values).detach().item(),
+                # vf explained var
+                "critic/vf_explained_var": (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
+            }
+            if use_critic
+            else {}
+        ),
+        **compute_length_metrics(batch),
+    }
+
+
+def compute_opd_data_metrics(batch: DataProto) -> dict[str, Any]:
+    metrics = compute_length_metrics(batch)
+
+    if "teacher_topk_logps" in batch.batch and "response_mask" in batch.batch:
+        response_mask = batch.batch["response_mask"].bool()
+        teacher_topk_mass = batch.batch["teacher_topk_logps"].float().exp().sum(dim=-1)
+        valid_teacher_topk_mass = torch.masked_select(teacher_topk_mass, response_mask)
+        if valid_teacher_topk_mass.numel() > 0:
+            metrics.update(
+                {
+                    "opd/teacher_topk_prob_mass/mean": torch.mean(valid_teacher_topk_mass).detach().item(),
+                    "opd/teacher_topk_prob_mass/max": torch.max(valid_teacher_topk_mass).detach().item(),
+                    "opd/teacher_topk_prob_mass/min": torch.min(valid_teacher_topk_mass).detach().item(),
+                }
+            )
+
+    return metrics
+
+
+def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> dict[str, Any]:
+    num_response_tokens = torch.sum(batch.batch["response_mask"]).item()
+    num_overall_tokens = sum(batch.meta_info["global_token_num"])
+    num_tokens_of_section = {
+        **dict.fromkeys(["gen", "reward"], num_response_tokens),
+        **dict.fromkeys(
+            ["ref", "old", "values", "adv", "teacher", "update_critic", "update_actor"],
+            num_overall_tokens,
+        ),
+    }
+    return {
+        **{f"timing_s/{name}": value for name, value in timing_raw.items()},
+        **{
+            f"timing_per_token_ms/{name}": timing_raw[name] * 1000 / num_tokens_of_section[name]
+            for name in set(num_tokens_of_section.keys()) & set(timing_raw.keys())
+        },
+    }
+
+
+def compute_throughout_metrics(batch: DataProto, timing_raw: dict[str, float], num_gpus: int) -> dict[str, Any]:
+    total_num_tokens = sum(batch.meta_info["global_token_num"])
+    time = timing_raw["step"]
+    return {
+        "perf/total_num_tokens": total_num_tokens,
+        "perf/time_per_step": time,
+        "perf/throughput": total_num_tokens / (time * num_gpus),
+    }

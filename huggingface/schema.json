@@ -1,0 +1,202 @@
+{
+  "row_id": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "sample_id": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "source_sample_id": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "dataset_version": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "source_dataset": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "source_video_ids": {
+    "feature": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "_type": "List"
+  },
+  "task_family": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "problem_type": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "level": {
+    "dtype": "int8",
+    "_type": "Value"
+  },
+  "prompt_mode": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "reasoning_tag": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "parent_sample_id": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "parent_dataset_revision": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "prompt": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "messages": {
+    "feature": {
+      "role": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "content": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    },
+    "_type": "List"
+  },
+  "answer": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "answer_format": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "answer_time_coordinate": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "media": {
+    "feature": {
+      "media_id": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "source_dataset": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "source_video_id": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "kind": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "video_path": {
+        "dtype": "string",
+        "_type": "Value"
+      },
+      "frame_keys": {
+        "feature": {
+          "dtype": "string",
+          "_type": "Value"
+        },
+        "_type": "List"
+      },
+      "source_frame_indices": {
+        "feature": {
+          "dtype": "int64",
+          "_type": "Value"
+        },
+        "_type": "List"
+      },
+      "source_timestamps_sec": {
+        "feature": {
+          "dtype": "float64",
+          "_type": "Value"
+        },
+        "_type": "List"
+      },
+      "presentation_timestamps_sec": {
+        "feature": {
+          "dtype": "float64",
+          "_type": "Value"
+        },
+        "_type": "List"
+      },
+      "clip_start_sec": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "clip_end_sec": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "duration_sec": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "source_fps": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "effective_fps": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "ordering": {
+        "dtype": "string",
+        "_type": "Value"
+      }
+    },
+    "_type": "List"
+  },
+  "split_role": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "mix_id": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "mix_row_index": {
+    "dtype": "int64",
+    "_type": "Value"
+  },
+  "annotation_id": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "build_id": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "license_ids": {
+    "feature": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "_type": "List"
+  },
+  "prompt_sha256": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "answer_sha256": {
+    "dtype": "string",
+    "_type": "Value"
+  },
+  "training_metadata_json": {
+    "dtype": "string",
+    "_type": "Value"
+  }
+}

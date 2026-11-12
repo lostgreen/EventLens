@@ -1,0 +1,11 @@
+EventLens training code includes code derived from EasyR1 and verl.
+
+verl: https://github.com/verl-project/verl
+Copyright 2024 Bytedance Ltd. and/or its affiliates.
+
+EasyR1: https://github.com/hiyouga/EasyR1
+Original copyright and Apache-2.0 headers are retained in the source files.
+
+The code license does not grant rights to training datasets, source videos,
+extracted frames, pretrained models, or trained checkpoints. Their respective
+licenses and source conditions apply separately; see docs/DATA.md.
